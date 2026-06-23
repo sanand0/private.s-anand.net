@@ -50,14 +50,14 @@ Example policy:
 Upload files to the `private` R2 bucket using Wrangler or any existing sync process.
 
 ```bash
-rtk npx wrangler r2 object put private/path/index.html --remote --file ./index.html
-rtk npx wrangler r2 object put private/path/.auth.json --remote --file ./.auth.json
+npx wrangler r2 object put private/path/index.html --remote --file ./index.html
+npx wrangler r2 object put private/path/.auth.json --remote --file ./.auth.json
 ```
 
 To make a folder public, remove its nearest `.auth.json` or move the content outside protected paths:
 
 ```bash
-rtk npx wrangler r2 object delete private/path/.auth.json --remote
+npx wrangler r2 object delete private/path/.auth.json --remote
 ```
 
 The local synced bucket is at `~/r2/private/`.
@@ -67,19 +67,19 @@ The local synced bucket is at `~/r2/private/`.
 Install dependencies:
 
 ```bash
-rtk npm install
+npm install
 ```
 
 Run tests:
 
 ```bash
-rtk npm test
+npm test
 ```
 
 Run locally with the real remote R2 bucket:
 
 ```bash
-rtk npx wrangler dev --port 8787 --env-file .env
+npx wrangler dev --port 8787 --env-file .env
 ```
 
 Required secrets are read from `.env` for local development:
@@ -91,13 +91,13 @@ Required secrets are read from `.env` for local development:
 Set production Worker secrets:
 
 ```bash
-rtk bash -lc 'set -a; source .env; set +a; for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET COOKIE_SECRET; do printf "%s" "${!name}" | npx wrangler secret put "$name"; done'
+bash -lc 'set -a; source .env; set +a; for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET COOKIE_SECRET; do printf "%s" "${!name}" | npx wrangler secret put "$name"; done'
 ```
 
 Deploy:
 
 ```bash
-rtk npx wrangler deploy
+npx wrangler deploy
 ```
 
 The OAuth callback URL configured in Google must be:
