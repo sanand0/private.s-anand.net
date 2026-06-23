@@ -84,6 +84,8 @@ npx wrangler dev --port 8787 --env-file .env
 
 Required secrets are read from `.env` for local development:
 
+<!-- https://console.cloud.google.com/auth/clients/872568319651-r1jl15a1oektabjl48ch3v9dhipkpdjh.apps.googleusercontent.com?project=encoded-ensign-221 - root.node@gmail.com - Project: Personal mail etc - Client - Web apps -->
+
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `COOKIE_SECRET`
