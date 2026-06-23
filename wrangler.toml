@@ -1,0 +1,12 @@
+name = "private-s-anand-net"
+main = "src/index.js"
+compatibility_date = "2026-06-23"
+compatibility_flags = ["nodejs_compat"]
+
+account_id = "2c483e1dd66869c9554c6949a2d17d96"
+routes = [{ pattern = "private.s-anand.net", custom_domain = true }]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "private"
+remote = true
