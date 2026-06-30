@@ -5,6 +5,7 @@ const COOKIE = "s";
 const DEFAULT_SESSION = 604800;
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
+const CF_FIELDS = ["country", "city", "region", "colo", "asn", "asOrganization", "httpProtocol", "timezone"];
 const ISSUERS = new Set(["accounts.google.com", "https://accounts.google.com"]);
 
 const enc = (value) => Buffer.from(value).toString("base64url");
@@ -108,13 +109,10 @@ const forbidden = (email) =>
     { status: 403, headers: { "content-type": "text/html; charset=UTF-8" } },
   );
 
-const logAccess = (request, env, ctx, response, { email = null, key = null, meta = {} } = {}) => {
+const logAccess = (request, env, ctx, response, { path, email = null, key = null, meta = {} }) => {
   if (!env.DB || !ctx?.waitUntil) return;
-  const url = new URL(request.url);
   const cf = Object.fromEntries(
-    ["country", "city", "region", "colo", "asn", "asOrganization", "httpProtocol", "timezone"]
-      .map((field) => [field, request.cf?.[field]])
-      .filter(([, value]) => value != null),
+    CF_FIELDS.map((field) => [field, request.cf?.[field]]).filter(([, value]) => value != null),
   );
   ctx.waitUntil(
     env.DB.prepare(
@@ -122,7 +120,7 @@ const logAccess = (request, env, ctx, response, { email = null, key = null, meta
     )
       .bind(
         email,
-        url.pathname,
+        path,
         key,
         response.status,
         request.headers.get("cf-connecting-ip"),
@@ -135,20 +133,19 @@ const logAccess = (request, env, ctx, response, { email = null, key = null, meta
   );
 };
 
-const serve = async (request, env, log = {}) => {
-  const url = new URL(request.url);
+const serve = async (request, env, access, url) => {
   if (url.pathname === "/logout") return redirect("/", 302, { "set-cookie": cookie("", 0) });
   if (url.pathname === "/auth") return auth(request, env);
 
   const key = keyForPath(url.pathname);
-  log.key = key;
+  access.key = key;
   if (!key) return new Response("Not found", { status: 404 });
 
   let object = await env.BUCKET.get(key);
   if (!object && !url.pathname.endsWith("/") && !url.pathname.split("/").pop().includes(".")) {
     object = await env.BUCKET.get(`${key}/index.html`);
     if (object) {
-      log.key = `${key}/index.html`;
+      access.key = `${key}/index.html`;
       return redirect(`${url.pathname}/${url.search}`, 308);
     }
   }
@@ -159,21 +156,20 @@ const serve = async (request, env, log = {}) => {
 
   const session = await readSession(request.headers.get("cookie"), env.COOKIE_SECRET);
   if (!session) return login(url, env);
-  log.email = session.email;
+  access.email = session.email;
   if (!matchEmail(session.email, policy.allow || [])) return forbidden(session.email);
   return responseFor(object);
 };
 
 const handle = async (request, env, ctx) => {
   const url = new URL(request.url);
-  const shouldLog = !["/auth", "/logout"].includes(url.pathname);
-  const result = { email: null, key: keyForPath(url.pathname), meta: {} };
+  const access = { path: url.pathname };
   let response;
   try {
-    response = await serve(request, env, result);
+    response = await serve(request, env, access, url);
   } finally {
     response ??= new Response("Internal Server Error", { status: 500 });
-    if (shouldLog) logAccess(request, env, ctx, response, result);
+    if (url.pathname !== "/auth" && url.pathname !== "/logout") logAccess(request, env, ctx, response, access);
   }
   return response;
 };
