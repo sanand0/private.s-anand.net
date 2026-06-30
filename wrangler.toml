@@ -10,3 +10,9 @@ routes = [{ pattern = "private.s-anand.net", custom_domain = true }]
 binding = "BUCKET"
 bucket_name = "private"
 remote = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "private-s-anand-net"
+database_id = "b176a442-06ae-4dc4-9c53-462ef8a6a4e7"
+migrations_dir = "migrations"

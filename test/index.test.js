@@ -1,107 +1,83 @@
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { env, SELF } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import {
-  authCandidates,
-  keyForPath,
-  matchEmail,
-  readSession,
-  signSession,
-  validateIdTokenClaims,
-  worker,
-} from "../src/index.js";
+import { authCandidates, keyForPath, matchEmail, readSession, signSession, validateIdTokenClaims } from "../src/index.js";
 
-const env = {
-  GOOGLE_CLIENT_ID: "client-id",
-  GOOGLE_CLIENT_SECRET: "client-secret",
-  COOKIE_SECRET: "secret",
-};
+const req = (path, headers = {}) => new Request(`https://private.s-anand.net${path}`, { headers, redirect: "manual" });
 
-const req = (path, headers = {}) => new Request(`https://private.s-anand.net${path}`, { headers });
+const put = async (key, value, options = {}) => env.BUCKET.put(key, value, options);
 
-const r2 = (objects) => ({
-  async get(key) {
-    const value = objects[key];
-    if (value == null) return null;
-    return {
-      body: value,
-      httpEtag: `"${key}"`,
-      size: value.length,
-      writeHttpMetadata(headers) {
-        if (key.endsWith(".html")) headers.set("content-type", "text/html");
-      },
-      async text() {
-        return value;
-      },
-    };
-  },
+const rows = async () => (await env.DB.prepare("SELECT * FROM access_log ORDER BY id").all()).results;
+
+beforeEach(async () => {
+  await env.DB.prepare("DELETE FROM access_log").run();
 });
 
 describe("static path mapping", () => {
   it("maps clean URLs and hides policy files", async () => {
-    assert.equal(keyForPath("/"), "index.html");
-    assert.equal(keyForPath("/client/"), "client/index.html");
-    assert.equal(keyForPath("/client/report.pdf"), "client/report.pdf");
-    assert.equal(keyForPath("/client/.auth.json"), null);
+    expect(keyForPath("/")).toBe("index.html");
+    expect(keyForPath("/client/")).toBe("client/index.html");
+    expect(keyForPath("/client/report.pdf")).toBe("client/report.pdf");
+    expect(keyForPath("/client/.auth.json")).toBe(null);
   });
 
   it("redirects extensionless paths to existing directory indexes", async () => {
-    const res = await worker.fetch(req("/client"), { ...env, BUCKET: r2({ "client/index.html": "ok" }) });
-    assert.equal(res.status, 308);
-    assert.equal(res.headers.get("location"), "/client/");
+    await put("client/index.html", "ok");
+    const res = await SELF.fetch(req("/client"));
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/client/");
   });
 });
 
 describe("R2 policy lookup", () => {
   it("searches upward and skips the bucket root", () => {
-    assert.deepEqual(authCandidates("client-a/subproject/page.html"), [
+    expect(authCandidates("client-a/subproject/page.html")).toEqual([
       "client-a/subproject/.auth.json",
       "client-a/.auth.json",
     ]);
-    assert.deepEqual(authCandidates("index.html"), []);
+    expect(authCandidates("index.html")).toEqual([]);
   });
 
   it("requires login only when the nearest policy exists", async () => {
-    const BUCKET = r2({
-      "client/.auth.json": JSON.stringify({ allow: ["alice@gmail.com"] }),
-      "client/page.html": "secret",
-      "public/page.html": "public",
-    });
-    assert.equal((await worker.fetch(req("/public/page.html"), { ...env, BUCKET })).status, 200);
-    const res = await worker.fetch(req("/client/page.html"), { ...env, BUCKET });
-    assert.equal(res.status, 302);
-    assert.match(res.headers.get("location"), /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
+    await put("client/.auth.json", JSON.stringify({ allow: ["alice@gmail.com"] }));
+    await put("client/page.html", "secret");
+    await put("public/page.html", "public");
+
+    expect((await SELF.fetch(req("/public/page.html"))).status).toBe(200);
+    const res = await SELF.fetch(req("/client/page.html"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toMatch(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
   });
 });
 
 describe("authorization", () => {
   it("matches exact emails, direct-domain wildcards, and subdomain wildcards", () => {
-    assert.equal(matchEmail("alice@gmail.com", ["alice@gmail.com"]), true);
-    assert.equal(matchEmail("bob@example.com", ["*@example.com"]), true);
-    assert.equal(matchEmail("bob@x.example.com", ["*@example.com"]), false);
-    assert.equal(matchEmail("bob@x.client.com", ["*@*.client.com"]), true);
-    assert.equal(matchEmail("bob@client.com", ["*@*.client.com"]), false);
+    expect(matchEmail("alice@gmail.com", ["alice@gmail.com"])).toBe(true);
+    expect(matchEmail("bob@example.com", ["*@example.com"])).toBe(true);
+    expect(matchEmail("bob@x.example.com", ["*@example.com"])).toBe(false);
+    expect(matchEmail("bob@x.client.com", ["*@*.client.com"])).toBe(true);
+    expect(matchEmail("bob@client.com", ["*@*.client.com"])).toBe(false);
   });
 
   it("returns 403 for signed-in users not allowed by the nearest policy", async () => {
     const session = await signSession({ email: "eve@gmail.com", exp: 4_102_444_800 }, "secret");
-    const BUCKET = r2({
-      "client/.auth.json": JSON.stringify({ allow: ["alice@gmail.com"] }),
-      "client/page.html": "secret",
-    });
-    const res = await worker.fetch(req("/client/page.html", { cookie: `s=${session}` }), { ...env, BUCKET });
-    assert.equal(res.status, 403);
-    assert.match(res.headers.get("content-type"), /^text\/html/);
-    assert.match(await res.text(), /eve@gmail\.com/);
-    assert.match(await worker.fetch(req("/logout"), { ...env, BUCKET }).then((r) => r.headers.get("set-cookie")), /^s=;/);
+    await put("client/.auth.json", JSON.stringify({ allow: ["alice@gmail.com"] }));
+    await put("client/page.html", "secret");
+
+    const res = await SELF.fetch(req("/client/page.html", { cookie: `s=${session}` }));
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toMatch(/^text\/html/);
+    expect(await res.text()).toMatch(/eve@gmail\.com/);
+    const logout = await SELF.fetch(req("/logout"));
+    expect(logout.headers.getSetCookie()[0]).toMatch(/^s=;/);
   });
 });
 
 describe("sessions and Google claims", () => {
   it("round-trips signed JSON cookies and rejects tampering", async () => {
     const cookie = await signSession({ email: "alice@gmail.com", hd: "gmail.com", exp: 4_102_444_800 }, "secret");
-    assert.equal((await readSession(`s=${cookie}`, "secret")).email, "alice@gmail.com");
-    assert.equal(await readSession(`s=${cookie}x`, "secret"), null);
+    expect((await readSession(`s=${cookie}`, "secret")).email).toBe("alice@gmail.com");
+    expect(await readSession(`s=${cookie}x`, "secret")).toBe(null);
   });
 
   it("validates the Google ID token claims used by auth callback", () => {
@@ -113,7 +89,53 @@ describe("sessions and Google claims", () => {
       email: "alice@gmail.com",
       hd: "gmail.com",
     };
-    assert.equal(validateIdTokenClaims(payload, "client-id").email, "alice@gmail.com");
-    assert.throws(() => validateIdTokenClaims({ ...payload, email_verified: false }, "client-id"));
+    expect(validateIdTokenClaims(payload, "client-id").email).toBe("alice@gmail.com");
+    expect(() => validateIdTokenClaims({ ...payload, email_verified: false }, "client-id")).toThrow();
+  });
+});
+
+describe("analytics", () => {
+  it("logs public page access without query strings or secrets", async () => {
+    await put("index.html", "home", { httpMetadata: { contentType: "text/html" } });
+    const res = await SELF.fetch(
+      req("/?code=secret&x=1", {
+        "cf-connecting-ip": "203.0.113.10",
+        "user-agent": "Vitest Browser",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("home");
+    expect(await rows()).toMatchObject([
+      {
+        email: null,
+        path: "/",
+        key: "index.html",
+        status: 200,
+        ip: "203.0.113.10",
+        user_agent: "Vitest Browser",
+        meta: "{}",
+      },
+    ]);
+  });
+
+  it("logs authenticated email, denied status, and selected Cloudflare metadata", async () => {
+    const session = await signSession({ email: "eve@gmail.com", exp: 4_102_444_800 }, "secret");
+    await put("client/.auth.json", JSON.stringify({ allow: ["alice@gmail.com"] }));
+    await put("client/page.html", "secret");
+
+    const res = await SELF.fetch(req("/client/page.html", { cookie: `s=${session}` }), {
+      cf: { country: "IN", city: "Bengaluru", asn: 12345, colo: "BLR" },
+    });
+
+    expect(res.status).toBe(403);
+    const [row] = await rows();
+    expect(row).toMatchObject({
+      email: "eve@gmail.com",
+      path: "/client/page.html",
+      key: "client/page.html",
+      status: 403,
+    });
+    expect(JSON.parse(row.cf)).toMatchObject({ country: "IN", city: "Bengaluru", asn: 12345, colo: "BLR" });
   });
 });

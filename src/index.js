@@ -108,18 +108,49 @@ const forbidden = (email) =>
     { status: 403, headers: { "content-type": "text/html; charset=UTF-8" } },
   );
 
-const serve = async (request, env) => {
+const logAccess = (request, env, ctx, response, { email = null, key = null, meta = {} } = {}) => {
+  if (!env.DB || !ctx?.waitUntil) return;
+  const url = new URL(request.url);
+  const cf = Object.fromEntries(
+    ["country", "city", "region", "colo", "asn", "asOrganization", "httpProtocol", "timezone"]
+      .map((field) => [field, request.cf?.[field]])
+      .filter(([, value]) => value != null),
+  );
+  ctx.waitUntil(
+    env.DB.prepare(
+      "INSERT INTO access_log (email, path, key, status, ip, user_agent, cf, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+      .bind(
+        email,
+        url.pathname,
+        key,
+        response.status,
+        request.headers.get("cf-connecting-ip"),
+        request.headers.get("user-agent"),
+        JSON.stringify(cf),
+        JSON.stringify(meta),
+      )
+      .run()
+      .catch((error) => console.error("access log failed", error)),
+  );
+};
+
+const serve = async (request, env, log = {}) => {
   const url = new URL(request.url);
   if (url.pathname === "/logout") return redirect("/", 302, { "set-cookie": cookie("", 0) });
   if (url.pathname === "/auth") return auth(request, env);
 
   const key = keyForPath(url.pathname);
+  log.key = key;
   if (!key) return new Response("Not found", { status: 404 });
 
   let object = await env.BUCKET.get(key);
   if (!object && !url.pathname.endsWith("/") && !url.pathname.split("/").pop().includes(".")) {
     object = await env.BUCKET.get(`${key}/index.html`);
-    if (object) return redirect(`${url.pathname}/${url.search}`, 308);
+    if (object) {
+      log.key = `${key}/index.html`;
+      return redirect(`${url.pathname}/${url.search}`, 308);
+    }
   }
   if (!object) return new Response("Not found", { status: 404 });
 
@@ -128,8 +159,23 @@ const serve = async (request, env) => {
 
   const session = await readSession(request.headers.get("cookie"), env.COOKIE_SECRET);
   if (!session) return login(url, env);
+  log.email = session.email;
   if (!matchEmail(session.email, policy.allow || [])) return forbidden(session.email);
   return responseFor(object);
+};
+
+const handle = async (request, env, ctx) => {
+  const url = new URL(request.url);
+  const shouldLog = !["/auth", "/logout"].includes(url.pathname);
+  const result = { email: null, key: keyForPath(url.pathname), meta: {} };
+  let response;
+  try {
+    response = await serve(request, env, result);
+  } finally {
+    response ??= new Response("Internal Server Error", { status: 500 });
+    if (shouldLog) logAccess(request, env, ctx, response, result);
+  }
+  return response;
 };
 
 const auth = async (request, env) => {
@@ -153,5 +199,5 @@ const auth = async (request, env) => {
   return redirect(next, 302, { "set-cookie": cookie(session, duration) });
 };
 
-export const worker = { fetch: (request, env) => serve(request, env) };
+export const worker = { fetch: handle };
 export default worker;

@@ -1,7 +1,11 @@
 {
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "vitest run"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.20",
+    "vitest": "^4.1.9",
+    "wrangler": "^4.105.0"
+  }
 }

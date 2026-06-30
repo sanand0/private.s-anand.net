@@ -4,7 +4,7 @@ Minimal Cloudflare Worker that serves static files from the private R2 bucket na
 
 https://private.s-anand.net
 
-The Worker serves public files by default and uses Google OAuth only for paths protected by `.auth.json` files stored in R2. It uses no KV, D1, Durable Objects, Cloudflare Access, backend server, database, or framework.
+The Worker serves public files by default and uses Google OAuth only for paths protected by `.auth.json` files stored in R2. It uses D1 only for access logs, and no KV, Durable Objects, Cloudflare Access, backend server, external analytics service, or framework.
 
 ## How It Works
 
@@ -17,6 +17,7 @@ The Worker serves public files by default and uses Google OAuth only for paths p
 - Missing files return `404`.
 - Sessions are signed JSON cookies named `s` containing `{ email, hd, exp }`.
 - `/logout` clears the session cookie.
+- Meaningful requests are logged asynchronously to D1 in `access_log`.
 
 ## Access Control
 
@@ -61,6 +62,56 @@ npx wrangler r2 object delete private/path/.auth.json --remote
 ```
 
 The local synced bucket is at `~/r2/private/`.
+
+## Analytics
+
+Access logs are written to the D1 database bound as `DB`. The table stores UTC timestamp, authenticated email when available, URL path without query string, resolved R2 object key, response status, IP, user agent, selected Cloudflare request metadata as JSON, and future metadata as JSON.
+
+Apply migrations:
+
+```bash
+npx wrangler d1 migrations apply private-s-anand-net --remote
+```
+
+Recent accesses:
+
+```sql
+SELECT ts, email, path, key, status, ip, user_agent
+FROM access_log
+ORDER BY ts DESC
+LIMIT 50;
+```
+
+Accesses by email:
+
+```sql
+SELECT ts, path, key, status, json_extract(cf, '$.country') AS country
+FROM access_log
+WHERE email = 'alice@gmail.com'
+ORDER BY ts DESC
+LIMIT 50;
+```
+
+Top paths:
+
+```sql
+SELECT path, COUNT(*) AS accesses, COUNT(DISTINCT email) AS signed_in_users
+FROM access_log
+WHERE ts >= datetime('now', '-30 days')
+GROUP BY path
+ORDER BY accesses DESC
+LIMIT 20;
+```
+
+Status summary:
+
+```sql
+SELECT status, COUNT(*) AS accesses
+FROM access_log
+WHERE ts >= datetime('now', '-7 days')
+GROUP BY status
+ORDER BY accesses DESC;
+```
 
 ## Development
 
